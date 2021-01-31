@@ -1,176 +1,152 @@
-'##############################################################################################
-'3D Grapher By Ashish Kushwaha
-'----------------------------------------------------------------------------------------------
-'* Thanks to STxAxTIC. Without his sxript, coding this would be harder.
-'* Thanks to FellipeHeitor. His INPUTBOX() come handy when I need QB64 Input & OpenGL together.
-'----------------------------------------------------------------------------------------------
-'Description: Give an expression for z = ... containing terms of x, y (any power) & constants
-'With the power of sxript, it also support *trigonometric functions* in the expression.
-'Click on Ok. Then the Graph is plotted in 3D Space & shown in 2D screen.
-'-----------------------------------------------------------------------------------------------
-'Controls:
-'* Drag on screen with mouse for rotation.
-'* Mousewheel for zooming in or zooming out.
-'* Right click to plot new graph.
-'* Hit SPACE to switch between rendering modes.
-'----------------------------------------------------------------------------------------------
-'Friday the 13th March, 2020
-'----------------------------------------------------------------------------------------------
-'UPDATED : 16 March, 2020
-'added sgn() signum and abs() absolute value function
-'also added zooming feature and ability to plot new graph without running the app again.
-'UPDATED : 20 January, 2021
-'Added support to switch between solid surface render mode and lines render mode
+'##############################################################################
+'3D Grapher in QB64 using OpenGL
+'
+'Contributors:
+'  Ashish Kushwaha (primary)
+'  FellipeHeitor
+'  STxAxTIC
+'
+'See README.bm.
 
-'$INCLUDE:'sxript.bi'
+OPTION _EXPLICIT
+
+REM $INCLUDE: 'sxript.bi'
+REM $Include: 'sxmath.bi'
+
+DO UNTIL _SCREENEXISTS: LOOP
+_TITLE "3D Grapher"
+
+SCREEN _NEWIMAGE(600, 600, 32)
 
 DECLARE LIBRARY
     SUB gluLookAt (BYVAL eyeX#, BYVAL eyeY#, BYVAL eyeZ#, BYVAL centerX#, BYVAL centerY#, BYVAL centerZ#, BYVAL upX#, BYVAL upY#, BYVAL upZ#)
 END DECLARE
 
+' Types.
 TYPE rgb
     r AS SINGLE
     g AS SINGLE
     b AS SINGLE
 END TYPE
-TYPE vec3
-    x as SINGLE
-    y as SINGLE
-    z as SINGLE
-END TYPE
-TYPE vertex_type
-    pos as vec3
-    clr as rgb
-END TYPE
-DIM SHARED vert(100, 100), glAllow, xRot, yRot, colArr(100, 100) AS rgb, init
-DIM SHARED scaleFactor, graph_render_mode
-scaleFactor = 1.0
 
-_TITLE "3D Grapher"
-SCREEN _NEWIMAGE(600, 600, 32)
-a$ = SxriptEval("func(abs,{unquote(quote([x])/`-')})") 'hack for abs() function by STxAxTIC
-a$ = SxriptEval("func(sgn,{sub({let(a,[x]*1):print_iff([a]=0,{0},{iff(greater([a],0),{1},{-1})})})})") 'signum function by STxAxTIC
-start:
-dummy = INPUTBOX("Enter the expression for Z = ", "Enter the expression for Z = (ex. X*Y)", "X+Y-1", e$, -1)
-IF dummy = 2 THEN SYSTEM
-' for i = 1 to len(e$)
-' ca$ = mid$(e$,i,1)
-' if lcase$(ca$) = "x" then ca$= "[x]"
-' if lcase$(ca$) = "y" then ca$= "[y]"
-' ex$ = ex$+ca$
-' next
-' a$ = SxriptEval("func(plot,{"+ex$+"})")
-CLS
-PRINT "Generating... Just a moment"
-_DISPLAY
+' Master switch for SUB _GL().
+DIM SHARED glAllow AS INTEGER
 
-FOR x = -50 TO 50
-    FOR z = -50 TO 50
-        expression$ = ""
-        FOR i = 1 TO LEN(e$)
-            ca$ = MID$(e$, i, 1)
-            IF LCASE$(ca$) = "x" THEN ca$ = _TRIM$(STR$(x / 10))
-            IF LCASE$(ca$) = "y" THEN ca$ = _TRIM$(STR$(z / 10))
-            expression$ = expression$ + ca$
-        NEXT
-        vert(x + 50, z + 50) = VAL(SxriptEval(expression$)) 'replace x & y with actual numeric value & then evaluate with sxript.
-        'PRINT expression$, VAL(SxriptEval(expression$))
-        'SLEEP
-        IF init = 0 THEN 'storage of color per vertex need not done again & again.
-            c~& = hsb(map(z, -50, 50, 0, 255), 255, 128, 255)
-            colArr(x + 50, z + 50).r = _RED(c~&) / 255
-            colArr(x + 50, z + 50).g = _GREEN(c~&) / 255
-            colArr(x + 50, z + 50).b = _BLUE(c~&) / 255
-        END IF
-    NEXT
-NEXT
+' Plot structure.
+DIM SHARED mainEquation AS STRING
+DIM SHARED shadeMap(100, 100) AS rgb
+DIM SHARED vert(100, 100)
 
-CLS , 1 'display the equation.
-COLOR , 1
-PRINT "Z = " + e$
-_DISPLAY
-_GLRENDER _BEHIND
-graph_render_mode = 1' 1=solid surface, -1=lines
-glAllow = 1
-init = 1
-'SLEEP
+' Plot settings.
+DIM SHARED stepFactor AS DOUBLE
+DIM SHARED zStretch AS DOUBLE
+
+' Camera settings.
+DIM SHARED xRot AS DOUBLE
+DIM SHARED yRot AS DOUBLE
+DIM SHARED zoomFactor
+
+' Render settings.
+DIM SHARED graph_render_mode
+
+' Initialize.
+CALL setShades
+stepFactor = .1
+zStretch = 5
+zoomFactor = 1.0
+mainEquation = "sin((x^2)-(y^2))"
+
+IF (COMMAND$ <> "") THEN
+    OPEN COMMAND$ FOR INPUT AS #1
+    INPUT #1, mainEquation
+    CLOSE #1
+ELSE
+    CALL getEquation
+END IF
+
+' Prime main loop.
+CALL initSequence
+
+' Main loop.
 DO
-    WHILE _MOUSEINPUT
-        IF scaleFactor > 0.1 THEN 'to prevent negative value
-            scaleFactor = scaleFactor + _MOUSEWHEEL * 0.05
-        ELSE
-            scaleFactor = 0.11 'so it's value can still be change.
-        END IF
-    WEND
-    IF _MOUSEBUTTON(1) THEN
-        x = _MOUSEX: y = _MOUSEY
-        WHILE _MOUSEBUTTON(1)
-            WHILE _MOUSEINPUT: WEND
-            yRot = yRot + (_MOUSEX - x) 'rotate by change
-            xRot = xRot + (_MOUSEY - y)
-            x = _MOUSEX: y = _MOUSEY
-        WEND
+    CALL mouseProcess
+    IF (glAllow = 0) THEN
+        CALL getEquation
+        CALL initSequence
     END IF
-    IF _MOUSEBUTTON(2) THEN
-        glAllow = 0 'disbale GL rendering & clear screen.
-        CLS
-        GOTO start 'to take new input
-    END IF
-    k& = _KEYHIT
-    if k&=32 then graph_render_mode = graph_render_mode*-1
+    CALL keyProcess
     _LIMIT 60
 LOOP
 
-SUB _GL () STATIC
-    IF glAllow = 0 THEN EXIT SUB
+END
 
+SUB _GL () STATIC
+    IF (glAllow = 0) THEN EXIT SUB
+
+    DIM x AS INTEGER
+    DIM z AS INTEGER
+
+    ' Environment.
     _glClear _GL_COLOR_BUFFER_BIT OR _GL_DEPTH_BUFFER_BIT
     _glEnable _GL_DEPTH_TEST
     _glEnable _GL_BLEND
-
-
     _glMatrixMode _GL_PROJECTION
-    _gluPerspective 50, 1, 0.1, 40
 
+    _gluPerspective 50, 1, 0.1, 40
     _glMatrixMode _GL_MODELVIEW
+
     _glLoadIdentity
 
     gluLookAt 0, 7, 15, 0, 0, 0, 0, 1, 0
+
+    ' Set camera angle.
     _glRotatef xRot, 1, 0, 0
     _glRotatef yRot, 0, 1, 0
-    
-    _glScalef scaleFactor, scaleFactor, scaleFactor 'for zooming with mousewheel
-    
-    _glLineWidth 2.0
-    'draw axis
+
+    ' Set camera zoom.
+    _glScalef zoomFactor, zoomFactor, zoomFactor
+
+    ' Draw axes.
     _glBegin _GL_LINES
-    'x-axis
+    _glLineWidth 2.0
+    ' x-axis
     _glColor3f 1, 0, 0
     _glVertex3f -5, 0, 0
     _glVertex3f 5, 0, 0
-    'z-axis
+    ' z-axis
     _glColor3f 0, 1, 0
     _glVertex3f 0, -5, 0
     _glVertex3f 0, 5, 0
-    'y-axis
+    ' y-axis
     _glColor3f 0, 0, 1
     _glVertex3f 0, 0, -5
     _glVertex3f 0, 0, 5
-
     _glEnd
-    _glColor3f 1, 1, 1
-    _glLineWidth 1.0
-    'draw the surface according to stored height map evaluated before.
-    FOR z = -50 TO 49
-        if graph_render_mode = 1 then _glBegin _GL_TRIANGLE_STRIP else _glBegin _GL_LINE_STRIP
-        FOR x = -50 TO 50
-            _glColor4f colArr(x + 50, z + 50).r, colArr(x + 50, z + 50).g, colArr(x + 50, z + 50).b, 0.7
-            _glVertex3f map(x, -50, 50, -5, 5), vert(x + 50, z + 50), map(z, -50, 50, 5, -5)
-            _glVertex3f map(x, -50, 50, -5, 5), vert(x + 50, z + 51), map(z + 1, -50, 50, 5, -5)
-        NEXT
-        _glEnd
-    NEXT
 
+    ' Draw the surface.
+    FOR z = -50 TO 49
+        FOR x = -50 TO 49
+
+            ' Each square patch is really two triangles.
+
+            IF (graph_render_mode = 1) THEN _glBegin _GL_TRIANGLE_STRIP ELSE _glBegin _GL_LINE_STRIP
+            _glColor4f shadeMap(x + 50, z + 50).r, shadeMap(x + 50, z + 50).g, shadeMap(x + 50, z + 50).b, 0.7
+            _glLineWidth 1.0
+            _glVertex3f x, vert(x + 50, z + 50), z
+            _glVertex3f x + 1, vert(x + 51, z + 50), z
+            _glVertex3f x, vert(x + 50, z + 51), z + 1
+            _glEnd
+
+            IF (graph_render_mode = 1) THEN _glBegin _GL_TRIANGLE_STRIP ELSE _glBegin _GL_LINE_STRIP
+            _glColor4f shadeMap(x + 50, z + 50).r, shadeMap(x + 50, z + 50).g, shadeMap(x + 50, z + 50).b, 0.7
+            _glLineWidth 1.0
+            _glVertex3f x + 1, vert(x + 51, z + 51), z + 1
+            _glVertex3f x + 1, vert(x + 51, z + 50), z
+            _glVertex3f x, vert(x + 50, z + 51), z + 1
+            _glEnd
+
+        NEXT
+    NEXT
 
 END SUB
 
@@ -582,9 +558,8 @@ FUNCTION INPUTBOX (tTitle$, tMessage$, InitialValue AS STRING, NewValue AS STRIN
     RETURN
 END FUNCTION
 
-
-'method adapted form http://stackoverflow.com/questions/4106363/converting-rgb-to-hsb-colors
 FUNCTION hsb~& (__H AS _FLOAT, __S AS _FLOAT, __B AS _FLOAT, A AS _FLOAT)
+    'method adapted form http://stackoverflow.com/questions/4106363/converting-rgb-to-hsb-colors
     DIM H AS _FLOAT, S AS _FLOAT, B AS _FLOAT
 
     H = map(__H, 0, 255, 0, 360)
@@ -641,13 +616,99 @@ FUNCTION hsb~& (__H AS _FLOAT, __S AS _FLOAT, __B AS _FLOAT, A AS _FLOAT)
         CASE ELSE
             hsb~& = _RGBA32(imx, imd, imn, A)
     END SELECT
-
 END FUNCTION
 
+SUB getEquation
+    DIM inputStatus AS INTEGER
+    CLS
+    inputStatus = INPUTBOX("Equation Editor", "Enter the expression for z = (ex. x*y)", mainEquation, mainEquation, -1)
+    IF (inputStatus = 2) THEN END
+END SUB
+
+SUB initSequence
+    CLS
+    PRINT "Generating..."
+    _DISPLAY
+    CALL generatePlot(mainEquation)
+    CLS , 1
+    COLOR , 1
+    PRINT "z = " + mainEquation
+    _DISPLAY
+    _GLRENDER _BEHIND
+    graph_render_mode = 1 ' 1=solid surface, -1=lines
+    glAllow = 1
+END SUB
+
+SUB mouseProcess
+    DIM x AS DOUBLE
+    DIM y AS DOUBLE
+    WHILE _MOUSEINPUT
+        IF (zoomFactor > 0.1) THEN
+            zoomFactor = zoomFactor + _MOUSEWHEEL * 0.05
+        ELSE
+            zoomFactor = 0.11
+        END IF
+    WEND
+    IF (_MOUSEBUTTON(1)) THEN
+        x = _MOUSEX
+        y = _MOUSEY
+        WHILE _MOUSEBUTTON(1)
+            WHILE _MOUSEINPUT: WEND
+            yRot = yRot + (_MOUSEX - x)
+            xRot = xRot + (_MOUSEY - y)
+            x = _MOUSEX
+            y = _MOUSEY
+        WEND
+    END IF
+    IF (_MOUSEBUTTON(2)) THEN
+        glAllow = 0
+    END IF
+END SUB
+
+SUB keyProcess
+    DIM k AS INTEGER
+    k = _KEYHIT
+    IF (k = ASC(" ")) THEN graph_render_mode = graph_render_mode * -1
+    _KEYCLEAR
+END SUB
+
+SUB generatePlot (TheExpression AS STRING)
+    DIM x AS INTEGER
+    DIM z AS INTEGER
+    DIM i AS INTEGER
+    DIM ca AS STRING
+    DIM ex AS STRING
+    FOR x = -50 TO 50
+        FOR z = -50 TO 50
+            ex = ""
+            FOR i = 1 TO LEN(TheExpression)
+                ca = MID$(TheExpression, i, 1)
+                IF (LCASE$(ca) = "x") THEN ca = _TRIM$("(" + STR$(x * stepFactor) + ")")
+                IF (LCASE$(ca) = "y") THEN ca = _TRIM$("(" + STR$(z * stepFactor) + ")")
+                ex = ex + ca
+            NEXT
+            vert(x + 50, z + 50) = zStretch * VAL(SxriptEval(ex))
+        NEXT
+    NEXT
+END SUB
+
+SUB setShades
+    DIM x AS INTEGER
+    DIM z AS INTEGER
+    DIM c AS _UNSIGNED LONG
+    FOR x = -50 TO 50
+        FOR z = -50 TO 50
+            c = hsb(map(z, -50, 50, 0, 255), 255, 128, 255)
+            shadeMap(x + 50, z + 50).r = _RED(c) / 255
+            shadeMap(x + 50, z + 50).g = _GREEN(c) / 255
+            shadeMap(x + 50, z + 50).b = _BLUE(c) / 255
+        NEXT
+    NEXT
+END SUB
 
 FUNCTION map! (value!, minRange!, maxRange!, newMinRange!, newMaxRange!)
     map! = ((value! - minRange!) / (maxRange! - minRange!)) * (newMaxRange! - newMinRange!) + newMinRange!
 END FUNCTION
 
-
-'$INCLUDE:'sxript.bm'
+REM $INCLUDE: 'sxript.bm'
+REM $Include: 'sxmath.bm'
